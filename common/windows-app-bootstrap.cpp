@@ -5,6 +5,8 @@
 // We need WinMain on Windows to offer proper Windows application and not console application
 // Should not be used in CMake on Linux
 
+#include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <Windows.h>
 #include <memory>
 #include <vector>
