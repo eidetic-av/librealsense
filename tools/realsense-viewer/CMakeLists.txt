@@ -22,6 +22,19 @@ include(../../common/CMakeLists.txt)
 if(BUILD_GRAPHICAL_EXAMPLES)
     set(RS_VIEWER_CPP
     ${COMMON_SRC}
+	../../third-party/opencv2/opencv.hpp
+	livescan/glm/glm.hpp
+	livescan/calibration.h
+	livescan/calibration.cpp
+	livescan/iMarker.h
+	livescan/iMarker.cpp
+	livescan/livescan_utils.h
+	livescan/marker.h
+	livescan/marker.cpp
+	livescan/utils.h
+	livescan/utils.cpp
+	livescan/zstd.h
+	livescan.h
     realsense-viewer.cpp
     ../../third-party/imgui/imgui.cpp
     ../../third-party/imgui/imgui_draw.cpp

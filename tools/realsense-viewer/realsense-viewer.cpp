@@ -1,11 +1,17 @@
 // License: Apache 2.0. See LICENSE file in root directory.
 // Copyright(c) 2017 Intel Corporation. All Rights Reserved.
 
+#ifdef _WIN32
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#include <Windows.h>
+#endif
 
 #include <librealsense2/rs.hpp>
 #ifdef NETWORK_DEVICE
 #include <librealsense2-net/rs_net.hpp>
 #endif
+
 #include "viewer.h"
 #include "os.h"
 #include "ux-window.h"
@@ -44,6 +50,9 @@
 // to initialize ours if we want to use the APIs!
 INITIALIZE_EASYLOGGINGPP
 #endif
+
+#include "livescan.h"
+
 using namespace rs2;
 using namespace rs400;
 
@@ -122,12 +131,12 @@ void add_playback_device(context& ctx, device_models_list& device_models,
     }
     catch (const error& e)
     {
-        error_message = to_string() << "Failed to load file " << file << ". Reason: " << error_to_string(e);
+        error_message = rs2::to_string() << "Failed to load file " << file << ". Reason: " << error_to_string(e);
         failed = true;
     }
     catch (const std::exception& e)
     {
-        error_message = to_string() << "Failed to load file " << file << ". Reason: " << e.what();
+        error_message = rs2::to_string() << "Failed to load file " << file << ". Reason: " << e.what();
         failed = true;
     }
     if (failed && was_loaded)
@@ -209,7 +218,7 @@ bool refresh_devices(std::mutex& m,
                 dev.supports(RS2_CAMERA_INFO_NAME) && std::string(dev.get_info(RS2_CAMERA_INFO_NAME)) != "Platform Camera" && std::string(dev.get_info(RS2_CAMERA_INFO_NAME)).find("IP Device") == std::string::npos)
             {
                 device_models.emplace_back(new device_model(dev, error_message, viewer_model));
-                viewer_model.not_model->add_log(to_string() << (*device_models.rbegin())->dev.get_info(RS2_CAMERA_INFO_NAME) << " was selected as a default device");
+                viewer_model.not_model->add_log(rs2::to_string() << (*device_models.rbegin())->dev.get_info(RS2_CAMERA_INFO_NAME) << " was selected as a default device");
                 added = true;
             }
 
@@ -390,11 +399,18 @@ int main(int argc, const char** argv) try
         }
     }
 
+    // Create the LiveScanSocket
+    auto liveScanSocket = new LiveScanSocket;
+    liveScanSocket->not_model = viewer_model.not_model;
+
     // Closing the window
     while (window)
     {
         auto device_changed = refresh_devices(m, ctx, devices_connection_changes, connected_devs,
             device_names, *device_models, viewer_model, error_message);
+
+        // set device count to connected_devs - the 1 playback dev
+        liveScanSocket->device_count = connected_devs.size() - 1;
 
         auto output_height = viewer_model.get_output_height();
 
@@ -421,9 +437,19 @@ int main(int argc, const char** argv) try
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5, 5));
         ImGui::SetNextWindowPos({ 0, viewer_model.panel_y });
 
-        std::string add_source_button_text = to_string() << " " << textual_icons::plus_circle << "  Add Source\t\t\t\t\t\t\t\t\t\t\t";
-        if (ImGui::Button(add_source_button_text.c_str(), { viewer_model.panel_width - 1, viewer_model.panel_y }))
+        std::string add_source_button_text = rs2::to_string() << " " << textual_icons::plus_circle << "  Add Source\t\t\t\t\t\t\t\t\t\t\t";
+        if (ImGui::Button(add_source_button_text.c_str(), { (viewer_model.panel_width / 2) - 1, viewer_model.panel_y }))
             ImGui::OpenPopup("select");
+
+        ImGui::SameLine((viewer_model.panel_width / 2));
+
+        // Button to configure LiveScanSocket streaming
+        ImGui::PushFont(window.get_font());
+        std::string configure_streaming_button_text = "Configure LAN\n    Streaming";
+        if (ImGui::Button(configure_streaming_button_text.c_str(), { (viewer_model.panel_width / 2) - 1, viewer_model.panel_y }))
+            ImGui::OpenPopup("lan_config");
+
+        ImGui::PushFont(window.get_large_font());
 
         auto new_devices_count = device_names.size() + 1;
 
@@ -625,6 +651,62 @@ int main(int argc, const char** argv) try
             ImGui::PopStyleColor();
             ImGui::EndPopup();
             }
+
+            // LiveScanSocket lan stream options popup
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.f, 15.f));
+            if (ImGui::BeginPopup("lan_config"))
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, dark_grey);
+                ImGui::PushFont(window.get_large_font());
+                ImGui::Text("LAN streaming configuration");
+
+                ImGui::Dummy(ImVec2(0.f, 5.f));
+
+                ImGui::PushFont(window.get_font());
+                ImGui::PushStyleColor(ImGuiCol_Text, white);
+
+                ImGui::TextColored(dark_grey, "Host IP");
+                ImGui::InputText("", liveScanSocket->server_ip, IM_ARRAYSIZE(liveScanSocket->server_ip), ImGuiInputTextFlags_CharsDecimal);
+
+                ImGui::TextColored(dark_grey, "Host port");
+                ImGui::InputInt(".", &liveScanSocket->server_port);
+
+                ImGui::TextColored(dark_grey, "Offset position");
+                ImGui::PushItemWidth(275);
+                ImGui::SliderFloat("px", &liveScanSocket->manual_position_x, -10, 10);
+                ImGui::SliderFloat("py", &liveScanSocket->manual_position_y, -10, 10);
+                ImGui::SliderFloat("pz", &liveScanSocket->manual_position_z, -10, 10);
+                ImGui::PopItemWidth();
+
+                ImGui::TextColored(dark_grey, "Offset rotation");
+                ImGui::PushItemWidth(275);
+                ImGui::SliderFloat("rx", &liveScanSocket->manual_rotation_x, -M_PI, M_PI);
+                ImGui::SliderFloat("ry", &liveScanSocket->manual_rotation_y, -M_PI, M_PI);
+                ImGui::SliderFloat("rz", &liveScanSocket->manual_rotation_z, -M_PI, M_PI);
+                ImGui::PopItemWidth();
+
+                ImGui::Dummy(ImVec2(0.f, 15.f));
+
+                if (!liveScanSocket->connected && !liveScanSocket->connecting)
+                {
+                    if (ImGui::Button("Connect", { 100.f, 25.f }))
+                        liveScanSocket->connect();
+                }
+                else if (liveScanSocket->connecting)
+                {
+                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.6f);
+                    ImGui::Button("Connecting...", { 100.f, 25.f });
+                    ImGui::PopStyleVar();
+                }
+                else if (liveScanSocket->connected) {
+                    if (ImGui::Button("Disconnect", { 100.f, 25.f }))
+                        liveScanSocket->disconnect();
+                }
+
+                ImGui::EndPopup();
+            }
+            ImGui::PopStyleVar();
+
         ImGui::PopFont();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
@@ -737,7 +819,12 @@ int main(int argc, const char** argv) try
         ImGui::PopStyleColor();
 
         // Fetch and process frames from queue
-        viewer_model.handle_ready_frames(viewer_rect, window, static_cast<int>(device_models->size()), error_message);
+        auto f = viewer_model.handle_ready_frames(viewer_rect, window, static_cast<int>(device_models->size()), error_message);
+
+        // Send frame to LiveScanSocket thread
+        if (liveScanSocket->connected)
+            liveScanSocket->send_frame(f);
+
         }
 
     // Stopping post processing filter rendering thread
