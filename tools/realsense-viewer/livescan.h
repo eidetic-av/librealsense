@@ -48,6 +48,13 @@ struct LiveScanSocket {
 	float manual_rotation_y = 0;
 	float manual_rotation_z = 0;
 
+	float cutoff_min_z = 0;
+	float cutoff_max_z = 10;
+	float cutoff_min_x = -10;
+	float cutoff_max_x = 10;
+	float cutoff_min_y = -10;
+	float cutoff_max_y = 10;
+
 	bool capture_frame;
 	bool calibrate = false;
 	bool confirm_calibrated = false;
@@ -444,6 +451,13 @@ void LiveScanSocket::update(LiveScanSocket *liveScanSocket) {
 						float final_z = rotated_thrice[2] + manual_position[2];
 
 						auto point = Point3f(final_x, final_y, final_z);
+
+						discard = discard || (point.Z < liveScanSocket->cutoff_min_z);
+						discard = discard || (point.Z > liveScanSocket->cutoff_max_z);
+						discard = discard || (point.X < liveScanSocket->cutoff_min_x);
+						discard = discard || (point.X > liveScanSocket->cutoff_max_x);
+						discard = discard || (point.Y < liveScanSocket->cutoff_min_y);
+						discard = discard || (point.Y > liveScanSocket->cutoff_max_y);
 
 						if (!discard) {
 							// position data is sent as short values in

@@ -651,6 +651,24 @@ int main(int argc, const char** argv) try
                 ImGui::SliderFloat("rz", &liveScanSocket->manual_rotation_z, -M_PI, M_PI);
                 ImGui::PopItemWidth();
 
+				ImGui::TextColored(dark_grey, "Point cutoff depth");
+				ImGui::PushItemWidth(275);
+				ImGui::SliderFloat("min_z", &liveScanSocket->cutoff_min_z, 0, 10.f);
+				ImGui::SliderFloat("max_z", &liveScanSocket->cutoff_max_z, 0, 10.f);
+				ImGui::PopItemWidth();
+
+				ImGui::TextColored(dark_grey, "Point cutoff width");
+				ImGui::PushItemWidth(275);
+				ImGui::SliderFloat("min_x", &liveScanSocket->cutoff_min_x, -10.f, 10.f);
+				ImGui::SliderFloat("max_x", &liveScanSocket->cutoff_max_x, -10.f, 10.f);
+				ImGui::PopItemWidth();
+
+				ImGui::TextColored(dark_grey, "Point cutoff height");
+				ImGui::PushItemWidth(275);
+				ImGui::SliderFloat("min_y", &liveScanSocket->cutoff_min_y, -10.f, 10.f);
+				ImGui::SliderFloat("max_y", &liveScanSocket->cutoff_max_y, -10.f, 10.f);
+				ImGui::PopItemWidth();
+
                 ImGui::Dummy(ImVec2(0.f, 15.f));
 
                 if (!liveScanSocket->connected && !liveScanSocket->connecting)
