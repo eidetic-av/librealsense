@@ -1,5 +1,8 @@
 // License: Apache 2.0. See LICENSE file in root directory.
 // Copyright(c) 2017 Intel Corporation. All Rights Reserved.
+//
+// This file contains changes made by eidetic (Matt Hughes)
+// https://github.com/eidetic-av
 
 #ifdef _WIN32
 #include <WinSock2.h>
