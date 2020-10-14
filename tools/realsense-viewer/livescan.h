@@ -20,6 +20,7 @@
 #include "livescan/zstd.h"
 
 #include "livescan/glm/glm.hpp"
+#include <omp.h>
 
 #ifdef _WIN32
 #define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
@@ -69,14 +70,15 @@ struct LiveScanSocket {
 
 	std::mutex update_mutex;
 
-	static void listener(LiveScanSocket *liveScanSocket);
-	static void update(LiveScanSocket *liveScanSocket);
+	static void listener(LiveScanSocket* liveScanSocket);
+	static void update(LiveScanSocket* liveScanSocket);
 
 #ifdef _WIN32
 	WSADATA wsa_data;
 #endif
 
 	void connect() {
+
 		std::string connect_msg =
 			"Attempting to connect to LiveScan server at ";
 		connect_msg += server_ip;
@@ -104,11 +106,11 @@ struct LiveScanSocket {
 			return;
 		}
 #endif
-		
+
 #ifdef _WIN32
 		// convert host ip and port to struct
-		struct addrinfo *result = NULL,
-			*ptr = NULL,
+		struct addrinfo* result = NULL,
+			* ptr = NULL,
 			hints;
 
 		SecureZeroMemory(&hints, sizeof(hints));
@@ -154,7 +156,7 @@ struct LiveScanSocket {
 		}
 #elif
 		// try to reach server
-		struct hostent *server = gethostbyname(server_ip);
+		struct hostent* server = gethostbyname(server_ip);
 		if (server == NULL) {
 			not_model->add_log("Failed to connect. Is the server running?");
 			connecting = false;
@@ -163,15 +165,15 @@ struct LiveScanSocket {
 
 		// convert host ip and port to C struct
 		struct sockaddr_in serv_addr;
-		bzero((char *)&serv_addr, sizeof(serv_addr));
+		bzero((char*)&serv_addr, sizeof(serv_addr));
 		serv_addr.sin_family = AF_INET;
-		bcopy((char *)server->h_addr, (char *)&serv_addr.sin_addr.s_addr,
+		bcopy((char*)server->h_addr, (char*)&serv_addr.sin_addr.s_addr,
 			server->h_length);
 		serv_addr.sin_port = htons(server_port);
 
 		// try to connect
-		if (::connect(sockfd, (struct sockaddr *)&serv_addr,
-					sizeof(serv_addr)) < 0) {
+		if (::connect(sockfd, (struct sockaddr*)&serv_addr,
+			sizeof(serv_addr)) < 0) {
 			not_model->add_log("Failed to connect.");
 			connecting = false;
 			return;
@@ -201,25 +203,22 @@ struct LiveScanSocket {
 		connected = false;
 	}
 
-	rs2::frame_queue depth_frames = rs2::frame_queue(3);
-	rs2::frame_queue color_frames = rs2::frame_queue(3);
+	bool new_frames = false;
+	rs2::frame latest_depth_frame;
+	rs2::frame latest_color_frame;
 
 	void send_frame(rs2::frame f) {
 		auto frames = f.as<rs2::frameset>();
-		if (frames.size() > 0) {
-			if (auto depth = frames.first_or_default(RS2_STREAM_DEPTH)) {
-				depth.keep();
-				depth_frames.enqueue(depth);
-			}
-			if (auto color = frames.first_or_default(RS2_STREAM_COLOR)) {
-				color.keep();
-				color_frames.enqueue(color);
-			}
+		if (frames.size() >= 2)
+		{
+			latest_depth_frame = frames.get_depth_frame();
+			latest_color_frame = frames.get_color_frame();
+			new_frames = true;
 		}
 	}
 };
 
-void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
+void LiveScanSocket::listener(LiveScanSocket* liveScanSocket) {
 	char byte_to_send;
 
 	while (liveScanSocket->connected) {
@@ -233,19 +232,21 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 			if (received[i] == MSG_CAPTURE_FRAME) {
 				liveScanSocket->capture_frame = true;
 
-			} else if (received[i] == MSG_CALIBRATE) {
+			}
+			else if (received[i] == MSG_CALIBRATE) {
 				liveScanSocket->calibration.bCalibrated = false;
 				liveScanSocket->calibrate = true;
 
-			} else if (received[i] == MSG_RECEIVE_SETTINGS) {
+			}
+			else if (received[i] == MSG_RECEIVE_SETTINGS) {
 
 				std::vector<float> bounds(6);
 				i++;
-				int nBytes = *(int *)(received.c_str() + i);
+				int nBytes = *(int*)(received.c_str() + i);
 				i += sizeof(int);
 
 				for (int j = 0; j < 6; j++) {
-					bounds[j] = *(float *)(received.c_str() + i);
+					bounds[j] = *(float*)(received.c_str() + i);
 					i += sizeof(float);
 				}
 
@@ -253,16 +254,16 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 				i++;
 
 				liveScanSocket->filter_neighbors =
-					*(int *)(received.c_str() + i);
+					*(int*)(received.c_str() + i);
 				i += sizeof(int);
 
 				liveScanSocket->filter_threshold =
-					*(float *)(received.c_str() + i);
+					*(float*)(received.c_str() + i);
 				i += sizeof(float);
 
 				liveScanSocket->bounds = bounds;
 
-				int num_markers = *(int *)(received.c_str() + i);
+				int num_markers = *(int*)(received.c_str() + i);
 				i += sizeof(int);
 
 				liveScanSocket->calibration.markerPoses.resize(num_markers);
@@ -276,11 +277,11 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 					}
 
 					for (int k = 0; k < 3; k++) {
-						liveScanSocket->calibration.markerPoses[j].t[k] =*(float*)(received.c_str() + i);
+						liveScanSocket->calibration.markerPoses[j].t[k] = *(float*)(received.c_str() + i);
 						i += sizeof(float);
 					}
 
-					liveScanSocket->calibration.markerPoses[j].markerId =*(int*)(received.c_str() + i);
+					liveScanSocket->calibration.markerPoses[j].markerId = *(int*)(received.c_str() + i);
 					i += sizeof(int);
 				}
 
@@ -288,7 +289,7 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 				i += 1;
 
 				liveScanSocket->compression_level =
-					*(int *)(received.c_str() + i);
+					*(int*)(received.c_str() + i);
 				i += sizeof(int);
 				if (liveScanSocket->compression_level > 0)
 					liveScanSocket->enable_compression = true;
@@ -307,12 +308,12 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 				/* vector<RGB> colors; */
 				/* bool res = m_framesFileWriterReader.readFrame(points,
 				 * colors); */
-				/* if (res == false) */
-				/* { */
-				/* 	int size = -1; */
-				/* 	m_pClientSocket->SendBytes((char*)&size, 4); */
-				/* } else */
-				/* 	SendFrame(points, colors, m_vLastFrameBody); */
+				 /* if (res == false) */
+				 /* { */
+				 /* 	int size = -1; */
+				 /* 	m_pClientSocket->SendBytes((char*)&size, 4); */
+				 /* } else */
+				 /* 	SendFrame(points, colors, m_vLastFrameBody); */
 			}
 			// send last frame
 			else if (received[i] == MSG_REQUEST_LAST_FRAME) {
@@ -332,19 +333,20 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 				/* 	{ */
 				/* 		calibration.worldR[j][k] =
 				 * *(float*)(received.c_str() + i); */
-				/* 		i += sizeof(float); */
-				/* 	} */
-				/* } */
-				/* for (int j = 0; j < 3; j++) */
-				/* { */
-				/* 	calibration.worldT[j] = *(float*)(received.c_str() +
-				 * i); */
-				/* 	i += sizeof(float); */
-				/* } */
+				 /* 		i += sizeof(float); */
+				 /* 	} */
+				 /* } */
+				 /* for (int j = 0; j < 3; j++) */
+				 /* { */
+				 /* 	calibration.worldT[j] = *(float*)(received.c_str() +
+				  * i); */
+				  /* 	i += sizeof(float); */
+				  /* } */
 
-				/* //so that we do not lose the next character in the stream */
-				/* i--; */
-			} else if (received[i] == MSG_CLEAR_STORED_FRAMES) {
+				  /* //so that we do not lose the next character in the stream */
+				  /* i--; */
+			}
+			else if (received[i] == MSG_CLEAR_STORED_FRAMES) {
 				/* m_framesFileWriterReader.closeFileIfOpened(); */
 			}
 		}
@@ -357,217 +359,214 @@ void LiveScanSocket::listener(LiveScanSocket *liveScanSocket) {
 		}
 
 		if (liveScanSocket->confirm_calibrated) {
-				
-				std::lock_guard<std::mutex> lock(liveScanSocket->update_mutex);
 
-				liveScanSocket->not_model->add_log("Successfully calibrated -- sending results.");
+			std::lock_guard<std::mutex> lock(liveScanSocket->update_mutex);
 
-				int size = (9 + 3) * sizeof(float) + sizeof(int) + 1;
-				char *buffer = new char[size];
-				buffer[0] = MSG_CONFIRM_CALIBRATED;
-				int i = 1;
+			liveScanSocket->not_model->add_log("Successfully calibrated -- sending results.");
 
-				memcpy(buffer + i, &liveScanSocket->calibration.iUsedMarkerId, 1 * sizeof(int));
-				i += 1 * sizeof(int);
-				memcpy(buffer + i, liveScanSocket->calibration.worldR[0].data(), 3 * sizeof(float));
-				i += 3 * sizeof(float);
-				memcpy(buffer + i, liveScanSocket->calibration.worldR[1].data(), 3 * sizeof(float));
-				i += 3 * sizeof(float);
-				memcpy(buffer + i, liveScanSocket->calibration.worldR[2].data(), 3 * sizeof(float));
-				i += 3 * sizeof(float);
-				memcpy(buffer + i, liveScanSocket->calibration.worldT.data(), 3 * sizeof(float));
-				i += 3 * sizeof(float);
+			int size = (9 + 3) * sizeof(float) + sizeof(int) + 1;
+			char* buffer = new char[size];
+			buffer[0] = MSG_CONFIRM_CALIBRATED;
+			int i = 1;
 
-				send_bytes(liveScanSocket->sockfd, buffer, size);
-				liveScanSocket->confirm_calibrated = false;
+			memcpy(buffer + i, &liveScanSocket->calibration.iUsedMarkerId, 1 * sizeof(int));
+			i += 1 * sizeof(int);
+			memcpy(buffer + i, liveScanSocket->calibration.worldR[0].data(), 3 * sizeof(float));
+			i += 3 * sizeof(float);
+			memcpy(buffer + i, liveScanSocket->calibration.worldR[1].data(), 3 * sizeof(float));
+			i += 3 * sizeof(float);
+			memcpy(buffer + i, liveScanSocket->calibration.worldR[2].data(), 3 * sizeof(float));
+			i += 3 * sizeof(float);
+			memcpy(buffer + i, liveScanSocket->calibration.worldT.data(), 3 * sizeof(float));
+			i += 3 * sizeof(float);
 
-				liveScanSocket->not_model->add_log("Sent.");
+			send_bytes(liveScanSocket->sockfd, buffer, size);
+			liveScanSocket->confirm_calibrated = false;
+
+			liveScanSocket->not_model->add_log("Sent.");
 		}
 	}
 }
 
-void LiveScanSocket::update(LiveScanSocket *liveScanSocket) {
+void LiveScanSocket::update(LiveScanSocket* liveScanSocket) {
 
 	while (liveScanSocket->connected) {
 
-		// throttle updates to 1000hz
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		// wait until we have a valid frameset...
+		// throttle updates to 100hz
+		while (!liveScanSocket->new_frames)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
+		// map the point cloud
 		rs2::pointcloud pointcloud;
-		// poll until we have both a depth and a color frame
-		rs2::frame depth_frame;
-		if (liveScanSocket->depth_frames.poll_for_frame(&depth_frame)) {
-			depth_frame.get_data();
-			rs2::frame color_frame;
-			if (liveScanSocket->color_frames.poll_for_frame(&color_frame)) {
-				/* liveScanSocket->confirm_captured = true; */
-				// map the point cloud
-				pointcloud.map_to(color_frame);
+		pointcloud.map_to(liveScanSocket->latest_color_frame);
 
-				// generate the vertices
-				rs2::points points = pointcloud.calculate(depth_frame);
-				auto vertices = points.get_vertices();
+		// generate the vertices
+		rs2::points points = pointcloud.calculate(liveScanSocket->latest_depth_frame);
+		auto vertices = points.get_vertices();
 
-				// get the texture data to map coords to pixels
-				auto tex_coords = points.get_texture_coordinates();
-				auto video_frame = color_frame.as<rs2::video_frame>();
-				const int tex_width = video_frame.get_width();
-				const int tex_height = video_frame.get_height();
-				const int tex_bytes_per_pixel =
-					video_frame.get_bytes_per_pixel();
-				const int tex_stride = video_frame.get_stride_in_bytes();
+		/*liveScanSocket->
+			spout_sender->SendImage((unsigned char const*)&vertices, 640, 480, GL_RGBA);*/
 
-				// create LiveScan data vectors to send
-				std::vector<Point3s> vertex_data;
-				std::vector<Color> color_data;
+			// get the texture data to map coords to pixels
+		auto tex_coords = points.get_texture_coordinates();
+		auto video_frame = liveScanSocket->latest_color_frame.as<rs2::video_frame>();
+		const int tex_width = video_frame.get_width();
+		const int tex_height = video_frame.get_height();
+		const int tex_bytes_per_pixel =
+			video_frame.get_bytes_per_pixel();
+		const int tex_stride = video_frame.get_stride_in_bytes();
 
-				std::vector<float> manual_position;
-				std::vector<float> manual_rotation;
+		// create LiveScan data vectors to send
+		std::vector<Point3s> vertex_data;
+		std::vector<Color> color_data;
 
-				manual_position.push_back(liveScanSocket->manual_position_x);
-				manual_position.push_back(liveScanSocket->manual_position_y);
-				manual_position.push_back(liveScanSocket->manual_position_z);
+		std::vector<float> manual_position;
+		std::vector<float> manual_rotation;
 
-				manual_rotation.push_back(liveScanSocket->manual_rotation_x);
-				manual_rotation.push_back(liveScanSocket->manual_rotation_y);
-				manual_rotation.push_back(liveScanSocket->manual_rotation_z);
+		manual_position.push_back(liveScanSocket->manual_position_x);
+		manual_position.push_back(liveScanSocket->manual_position_y);
+		manual_position.push_back(liveScanSocket->manual_position_z);
 
-				for (unsigned int i = 0; i < points.size(); i++) {
-					if (vertices[i].z) {
+		manual_rotation.push_back(liveScanSocket->manual_rotation_x);
+		manual_rotation.push_back(liveScanSocket->manual_rotation_y);
+		manual_rotation.push_back(liveScanSocket->manual_rotation_z);
 
-						bool discard = false;
-
-						glm::dvec3 dvec_point(vertices[i].x, vertices[i].y, vertices[i].z);
-						glm::dvec3 axis_one(0.f, 0.f, 1.f);
-						glm::dvec3 axis_two(0.f, 1.f, 0.f);
-						glm::dvec3 axis_three(1.f, 0.f, 0.f);
-
-						glm::dvec3 rotated_once = rotate_vector(dvec_point, axis_one, manual_rotation[0]);
-						glm::dvec3 rotated_twice = rotate_vector(rotated_once, axis_two, manual_rotation[1]);
-						glm::dvec3 rotated_thrice = rotate_vector(rotated_twice, axis_three, manual_rotation[2]);
-
-						float final_x = rotated_thrice[0] + manual_position[0];
-						float final_y = rotated_thrice[1] + manual_position[1];
-						float final_z = rotated_thrice[2] + manual_position[2];
-
-						auto point = Point3f(final_x, final_y, final_z);
-
-						discard = discard || (point.Z < liveScanSocket->cutoff_min_z);
-						discard = discard || (point.Z > liveScanSocket->cutoff_max_z);
-						discard = discard || (point.X < liveScanSocket->cutoff_min_x);
-						discard = discard || (point.X > liveScanSocket->cutoff_max_x);
-						discard = discard || (point.Y < liveScanSocket->cutoff_min_y);
-						discard = discard || (point.Y > liveScanSocket->cutoff_max_y);
-
-						if (!discard) {
-							// position data is sent as short values in
-							// millimetres
-							short X = static_cast<short>(point.X * 1000);
-							short Y = static_cast<short>(point.Y * 1000);
-							short Z = static_cast<short>(point.Z * 1000);
-							vertex_data.push_back(Point3s(X, Y, Z));
-
-							// get the corresponding pixel's rgb value to send
-							auto rgb = coord_to_rgb(
-								color_frame, tex_coords[i], tex_width,
-								tex_height, tex_bytes_per_pixel, tex_stride);
-							color_data.push_back(rgb);
-						}
-					}
-				}
+		for (int i = 0; i < points.size(); i++) {
+			if (vertices[i].z) {
 
 
-				if (liveScanSocket->calibrate) {
+				bool discard = false;
 
-					liveScanSocket->not_model->add_log("Attempting to calibrate.");
+				glm::dvec3 dvec_point(vertices[i].x, vertices[i].y, vertices[i].z);
+				glm::dvec3 axis_one(0.f, 0.f, 1.f);
+				glm::dvec3 axis_two(0.f, 1.f, 0.f);
+				glm::dvec3 axis_three(1.f, 0.f, 0.f);
 
-					Point3f *camera_coordinates = new Point3f[tex_width * tex_height];
+				glm::dvec3 rotated_once = rotate_vector(dvec_point, axis_one, manual_rotation[0]);
+				glm::dvec3 rotated_twice = rotate_vector(rotated_once, axis_two, manual_rotation[1]);
+				glm::dvec3 rotated_thrice = rotate_vector(rotated_twice, axis_three, manual_rotation[2]);
 
-					std::vector<Color> tex_data;
-					auto color_ptr = (uint8_t*)color_frame.get_data();
+				float final_x = rotated_thrice[0] + manual_position[0];
+				float final_y = rotated_thrice[1] + manual_position[1];
+				float final_z = rotated_thrice[2] + manual_position[2];
 
-					for (unsigned int y = 0; y < tex_height; y++) {
-						for (unsigned int x = 0; x < tex_width; x++) {
-							Color c = get_pixel_color(color_frame, x, y, tex_width, tex_height, tex_bytes_per_pixel, tex_stride);
-							tex_data.push_back(c);
-						}
-					}
+				auto point = Point3f(final_x, final_y, final_z);
 
-					bool completed_calibration =
-						liveScanSocket->calibration.Calibrate((Color *)tex_data.data(), camera_coordinates, tex_width, tex_height);
+				discard = discard || (point.Z < liveScanSocket->cutoff_min_z);
+				discard = discard || (point.Z > liveScanSocket->cutoff_max_z);
+				discard = discard || (point.X < liveScanSocket->cutoff_min_x);
+				discard = discard || (point.X > liveScanSocket->cutoff_max_x);
+				discard = discard || (point.Y < liveScanSocket->cutoff_min_y);
+				discard = discard || (point.Y > liveScanSocket->cutoff_max_y);
 
-					liveScanSocket->camera_offset = Point3f(camera_coordinates->X, camera_coordinates->Y, camera_coordinates->Z);
+				if (!discard) {
+					// position data is sent as short values in
+					// millimetres
+					short X = static_cast<short>(point.X * 1000);
+					short Y = static_cast<short>(point.Y * 1000);
+					short Z = static_cast<short>(point.Z * 1000);
+					vertex_data.push_back(Point3s(X, Y, Z));
 
-					delete[] camera_coordinates;
-
-					if (completed_calibration)
-					{
-						liveScanSocket->confirm_calibrated = true;
-						liveScanSocket->calibrate = false;
-					}
-
-				}
-
-				if (!liveScanSocket->confirm_calibrated) {
-
-					std::lock_guard<std::mutex> lock(liveScanSocket->update_mutex);
-
-					char byte_to_send = MSG_LAST_FRAME;
-					send_bytes(liveScanSocket->sockfd, &byte_to_send, 1);
-
-					int point_count = vertex_data.size();
-
-					// create the buffer
-					// buffer size is equal to the (the total number of vertices
-					// sent * (r,g,b + x,y,z as shorts)) + sizeof (the point count)
-					int buf_size = point_count * ((3 * sizeof(uint8_t)) +
-						(3 * sizeof(short))) +
-						sizeof(int);
-					std::vector<char> buffer(buf_size);
-					int pos = 0;
-
-					// add the point count to start of the buffer
-					memcpy(buffer.data(), &point_count, sizeof(point_count));
-					pos += sizeof(point_count);
-
-					char *vertex_data_ptr = (char *)vertex_data.data();
-					char *color_data_ptr = (char *)color_data.data();
-
-					for (unsigned int i = 0; i < point_count; i++) {
-						// add the rgb values
-						memcpy(buffer.data() + pos, color_data_ptr,
-							sizeof(uint8_t) * 3);
-						color_data_ptr += sizeof(uint8_t) * 3;
-						pos += sizeof(uint8_t) * 3;
-						// add the xyz values
-						memcpy(buffer.data() + pos, vertex_data_ptr,
-							sizeof(short) * 3);
-						vertex_data_ptr += sizeof(short) * 3;
-						pos += sizeof(short) * 3;
-					}
-
-					// add bodies
-					int num_bodies = 0;
-					buf_size += sizeof(num_bodies);
-					buffer.resize(buf_size);
-					memcpy(buffer.data() + pos, &num_bodies, sizeof(num_bodies));
-					pos += sizeof(num_bodies);
-
-					// create the TCP header with compression value 0 (for now)
-					int compression = static_cast<int>(false);
-
-					char header[8];
-					memcpy(header, (char *)&buf_size, sizeof(buf_size));
-					memcpy(header + 4, (char *)&compression, sizeof(compression));
-
-					// send the header + buffer
-					send_bytes(liveScanSocket->sockfd, (char *)&header,
-						sizeof(int) * 2);
-					send_bytes(liveScanSocket->sockfd, buffer.data(), buf_size);
-
+					// get the corresponding pixel's rgb value to send
+					auto rgb = coord_to_rgb(
+						liveScanSocket->latest_color_frame, tex_coords[i], tex_width,
+						tex_height, tex_bytes_per_pixel, tex_stride);
+					color_data.push_back(rgb);
 				}
 			}
 		}
+
+		if (liveScanSocket->calibrate) {
+
+			liveScanSocket->not_model->add_log("Attempting to calibrate.");
+
+			Point3f* camera_coordinates = new Point3f[tex_width * tex_height];
+
+			std::vector<Color> tex_data;
+			auto color_ptr = (uint8_t*)liveScanSocket->latest_color_frame.get_data();
+
+			for (unsigned int y = 0; y < tex_height; y++) {
+				for (unsigned int x = 0; x < tex_width; x++) {
+					Color c = get_pixel_color(liveScanSocket->latest_color_frame, x, y, tex_width, tex_height, tex_bytes_per_pixel, tex_stride);
+					tex_data.push_back(c);
+				}
+			}
+
+			bool completed_calibration =
+				liveScanSocket->calibration.Calibrate((Color*)tex_data.data(), camera_coordinates, tex_width, tex_height);
+
+			liveScanSocket->camera_offset = Point3f(camera_coordinates->X, camera_coordinates->Y, camera_coordinates->Z);
+
+			delete[] camera_coordinates;
+
+			if (completed_calibration)
+			{
+				liveScanSocket->confirm_calibrated = true;
+				liveScanSocket->calibrate = false;
+			}
+
+		}
+
+		if (!liveScanSocket->confirm_calibrated) {
+
+			std::lock_guard<std::mutex> lock(liveScanSocket->update_mutex);
+
+			char byte_to_send = MSG_LAST_FRAME;
+			send_bytes(liveScanSocket->sockfd, &byte_to_send, 1);
+
+			int point_count = vertex_data.size();
+
+			// create the buffer
+			// buffer size is equal to the (the total number of vertices
+			// sent * (r,g,b + x,y,z as shorts)) + sizeof (the point count)
+			int buf_size = point_count * ((3 * sizeof(uint8_t)) +
+				(3 * sizeof(short))) +
+				sizeof(int);
+			std::vector<char> buffer(buf_size);
+			int pos = 0;
+
+			// add the point count to start of the buffer
+			memcpy(buffer.data(), &point_count, sizeof(point_count));
+			pos += sizeof(point_count);
+
+			char* vertex_data_ptr = (char*)vertex_data.data();
+			char* color_data_ptr = (char*)color_data.data();
+
+			for (unsigned int i = 0; i < point_count; i++) {
+				// add the rgb values
+				memcpy(buffer.data() + pos, color_data_ptr,
+					sizeof(uint8_t) * 3);
+				color_data_ptr += sizeof(uint8_t) * 3;
+				pos += sizeof(uint8_t) * 3;
+				// add the xyz values
+				memcpy(buffer.data() + pos, vertex_data_ptr,
+					sizeof(short) * 3);
+				vertex_data_ptr += sizeof(short) * 3;
+				pos += sizeof(short) * 3;
+			}
+
+			// add bodies
+			int num_bodies = 0;
+			buf_size += sizeof(num_bodies);
+			buffer.resize(buf_size);
+			memcpy(buffer.data() + pos, &num_bodies, sizeof(num_bodies));
+			pos += sizeof(num_bodies);
+
+			// create the TCP header with compression value 0 (for now)
+			int compression = static_cast<int>(false);
+
+			char header[8];
+			memcpy(header, (char*)&buf_size, sizeof(buf_size));
+			memcpy(header + 4, (char*)&compression, sizeof(compression));
+
+			// send the header + buffer
+			send_bytes(liveScanSocket->sockfd, (char*)&header,
+				sizeof(int) * 2);
+			send_bytes(liveScanSocket->sockfd, buffer.data(), buf_size);
+
+		}
+		liveScanSocket->new_frames = false;
 	}
 }
 

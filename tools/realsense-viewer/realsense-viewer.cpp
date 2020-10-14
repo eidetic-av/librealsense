@@ -8,6 +8,7 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
+#pragma comment(lib, "WS2_32.Lib")
 #endif
 
 #include <librealsense2/rs.hpp>
@@ -818,7 +819,6 @@ int main(int argc, const char** argv) try
         // Send frame to LiveScanSocket thread
         if (liveScanSocket->connected)
             liveScanSocket->send_frame(f);
-
         }
 
     // Stopping post processing filter rendering thread
